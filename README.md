@@ -83,6 +83,90 @@ claude
 > export ANTHROPIC_API_KEY="sk-ant-..."
 > ```
 
+### 5. 使用 OpenAI 兼容 API（可选）
+
+支持接入任何 OpenAI 兼容的 API 服务（如 vLLM、Ollama、LiteLLM、OpenRouter、DeepSeek、通义千问等）：
+
+```bash
+# 设置环境变量
+export CLAUDE_CODE_USE_OPENAI=1
+export OPENAI_API_KEY="sk-xxx"                          # 你的 API Key
+export OPENAI_BASE_URL="https://api.deepseek.com/v1"    # API 基础 URL
+export OPENAI_MODEL="deepseek-chat"                     # 模型名称
+
+# 然后正常启动
+pnpm start
+```
+
+#### 环境变量说明
+
+| 环境变量 | 必填 | 说明 |
+|---------|------|------|
+| `CLAUDE_CODE_USE_OPENAI` | ✅ | 设为 `1` 启用 OpenAI 兼容模式 |
+| `OPENAI_API_KEY` | ✅ | API Key（部分本地服务可留空） |
+| `OPENAI_BASE_URL` | ✅ | API 基础 URL，需要包含 `/v1` |
+| `OPENAI_MODEL` | ⬜ | 模型名称，不设则使用请求中的原始模型名 |
+
+#### 常见服务配置示例
+
+```bash
+# DeepSeek
+OPENAI_BASE_URL="https://api.deepseek.com/v1"
+OPENAI_MODEL="deepseek-chat"
+
+# OpenRouter
+OPENAI_BASE_URL="https://openrouter.ai/api/v1"
+OPENAI_MODEL="anthropic/claude-3.5-sonnet"
+
+# Ollama (本地)
+OPENAI_BASE_URL="http://localhost:11434/v1"
+OPENAI_MODEL="qwen2.5:72b"
+
+# vLLM (本地)
+OPENAI_BASE_URL="http://localhost:8000/v1"
+OPENAI_MODEL="Qwen/Qwen2.5-72B-Instruct"
+
+# LiteLLM 代理
+OPENAI_BASE_URL="http://localhost:4000/v1"
+OPENAI_MODEL="gpt-4o"
+
+# 通义千问
+OPENAI_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
+OPENAI_MODEL="qwen-max"
+```
+
+#### Docker 中使用
+
+```bash
+docker run -it --rm \
+  -e CLAUDE_CODE_USE_OPENAI=1 \
+  -e OPENAI_API_KEY="sk-xxx" \
+  -e OPENAI_BASE_URL="https://api.deepseek.com/v1" \
+  -e OPENAI_MODEL="deepseek-chat" \
+  -v $(pwd):/workspace \
+  claude-code
+```
+
+#### 工作原理
+
+```
+Anthropic SDK → fetch 拦截 → 协议转换 → OpenAI Chat Completions API
+                                ↓
+              请求: Anthropic Messages → OpenAI Chat Completions
+              响应: OpenAI SSE Stream  → Anthropic SSE Stream
+```
+
+适配层在 HTTP fetch 层面做双向协议转换，上层代码完全无感知，继续使用 Anthropic SDK 的类型系统。
+
+#### 已知限制
+
+| 限制 | 说明 |
+|------|------|
+| 不支持 prompt caching | OpenAI API 无对应概念，cache 相关参数被忽略 |
+| thinking 模式降级 | Anthropic 的 extended thinking 被转为普通输出 |
+| beta features 不可用 | Anthropic 特有的 beta header 在此模式下自动跳过 |
+| 图片支持取决于后端 | 需要后端 API 支持 vision（通过 base64 URL 传递） |
+
 ---
 
 ## 构建原理

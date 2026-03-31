@@ -100,12 +100,12 @@ pnpm start
 
 #### 环境变量说明
 
-| 环境变量 | 必填 | 说明 |
-|---------|------|------|
-| `CLAUDE_CODE_USE_OPENAI` | ✅ | 设为 `1` 启用 OpenAI 兼容模式 |
-| `OPENAI_API_KEY` | ✅ | API Key（部分本地服务可留空） |
-| `OPENAI_BASE_URL` | ✅ | API 基础 URL，需要包含 `/v1` |
-| `OPENAI_MODEL` | ⬜ | 模型名称，不设则使用请求中的原始模型名 |
+| 环境变量 | 必填 | 说明 | 默认值 |
+|---------|------|------|--------|
+| `CLAUDE_CODE_USE_OPENAI` | ✅ | 设为 `1` 启用 OpenAI 兼容模式 | 无 |
+| `OPENAI_API_KEY` | ✅ | API Key（部分本地服务可留空） | `""` |
+| `OPENAI_BASE_URL` | ✅ | API 基础 URL，需要包含 `/v1` | `http://localhost:8000/v1` |
+| `OPENAI_MODEL` | ⬜ | 模型名称，不设则回退到 `gpt-4o` | `gpt-4o` |
 
 #### 常见服务配置示例
 
@@ -135,7 +135,30 @@ OPENAI_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
 OPENAI_MODEL="qwen-max"
 ```
 
-#### Docker 中使用
+#### Docker 构建与运行
+
+**构建镜像**：
+
+```bash
+# 在项目根目录执行（Dockerfile 位于根目录）
+docker build -t claude-code .
+
+# 多架构构建（amd64 + arm64）
+docker buildx build --platform linux/amd64,linux/arm64 -t claude-code .
+```
+
+> Dockerfile 采用两阶段构建：Stage 1 使用 Bun 安装依赖 + 打包，Stage 2 使用 `node:22-slim` 作为精简运行时，并安装 `git`、`ca-certificates`、`curl` 等运行时依赖。
+
+**使用 Anthropic API 运行**：
+
+```bash
+docker run -it --rm \
+  -e ANTHROPIC_API_KEY="sk-ant-..." \
+  -v $(pwd):/workspace \
+  claude-code
+```
+
+**使用 OpenAI 兼容 API 运行**：
 
 ```bash
 docker run -it --rm \
@@ -145,6 +168,36 @@ docker run -it --rm \
   -e OPENAI_MODEL="deepseek-chat" \
   -v $(pwd):/workspace \
   claude-code
+```
+
+**连接本地服务（如 Ollama、vLLM）**：
+
+```bash
+# 使用 --network host 让容器访问宿主机的本地服务
+docker run -it --rm \
+  --network host \
+  -e CLAUDE_CODE_USE_OPENAI=1 \
+  -e OPENAI_API_KEY="" \
+  -e OPENAI_BASE_URL="http://localhost:11434/v1" \
+  -e OPENAI_MODEL="qwen2.5:72b" \
+  -v $(pwd):/workspace \
+  claude-code
+```
+
+#### CNB 平台自动构建
+
+项目配置了 `.cnb.yml`，在 `dev` 分支推送时自动触发 Docker 多架构构建并推送到 CNB 镜像仓库：
+
+```yaml
+dev:
+  push:
+    - services:
+        - name: docker
+      stages:
+        - name: docker build & push
+          script: |
+            docker buildx build --platform linux/amd64,linux/arm64 \
+              -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:latest --push .
 ```
 
 #### 工作原理
@@ -166,6 +219,18 @@ Anthropic SDK → fetch 拦截 → 协议转换 → OpenAI Chat Completions API
 | thinking 模式降级 | Anthropic 的 extended thinking 被转为普通输出 |
 | beta features 不可用 | Anthropic 特有的 beta header 在此模式下自动跳过 |
 | 图片支持取决于后端 | 需要后端 API 支持 vision（通过 base64 URL 传递） |
+
+#### OpenAI 模式下自动禁用的功能
+
+以下 Anthropic 特有功能在 OpenAI 兼容模式下会被自动禁用，不影响核心对话和编码体验：
+
+| 功能 | 说明 |
+|------|------|
+| 遥测上报 (Analytics) | 不向 Anthropic 发送使用数据 |
+| 错误报告 (Error Reporting) | 不向 Anthropic 发送错误日志 |
+| 反馈命令 (`/feedback`) | 反馈通道仅适用于 Anthropic 服务 |
+| API 预连接 | 跳过对 Anthropic API 的预连接 |
+| 认证流程 | 跳过 Anthropic OAuth 认证，使用 `OPENAI_API_KEY` |
 
 ---
 

@@ -1,0 +1,8 @@
+claude-code-extracted/
+claude-code-source/node_modules/
+claude-code-source/dist/
+.git/
+.cnb/
+*.tgz
+*.log
+.DS_Store

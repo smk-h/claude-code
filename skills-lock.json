@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "skills": {
+    "cnb-api": {
+      "source": "cnb/skills/cnb-skill",
+      "sourceType": "git",
+      "computedHash": "0739c17b439bf9c5b19032ad7f6fd8d9eb47a88f921d4ae79449bca0b295bf8d"
+    },
+    "code-review": {
+      "source": "cnb/skills/cnb-skill",
+      "sourceType": "git",
+      "computedHash": "eaa96630ab83d416f3627df4adb493c7d5a473f55b5b5f37c890e21367854c44"
+    },
+    "code-to-pr": {
+      "source": "cnb/skills/cnb-skill",
+      "sourceType": "git",
+      "computedHash": "fe6d2396c403d7ba85083dae244035eeec5952746a2b9ec035071366423a3a3e"
+    },
+    "diagnose-pr-pipeline": {
+      "source": "cnb/skills/cnb-skill",
+      "sourceType": "git",
+      "computedHash": "16d0447e14429cb89f859c53b4c166902d6b81302ffd78980f938563aff97e15"
+    },
+    "dialog-ci-log": {
+      "source": "cnb/skills/cnb-skill",
+      "sourceType": "git",
+      "computedHash": "7d9a03e021ebc0179796f4af84aaee266ea7fcddd2c105293f72133ef1cb0f8d"
+    },
+    "pr-diff": {
+      "source": "cnb/skills/cnb-skill",
+      "sourceType": "git",
+      "computedHash": "80177b5817b52fc49ccde7b31d0cb003bb4a7d17ae71a38194222130a5900728"
+    },
+    "pr-summary": {
+      "source": "cnb/skills/cnb-skill",
+      "sourceType": "git",
+      "computedHash": "3e0a50ca52be699eaf46d8923d20d728a6316b6911d9ac9f97f4c59c1b7f3dbf"
+    },
+    "tapd-resource-fetcher": {
+      "source": "cnb/skills/cnb-skill",
+      "sourceType": "git",
+      "computedHash": "572ca5b4fddefd88773b0e2eec250e1deff24da721d67a2d4e413b439544678e"
+    },
+    "text-path-converter": {
+      "source": "cnb/skills/cnb-skill",
+      "sourceType": "git",
+      "computedHash": "9979b94b59684ce2b19220d0c6bb9515c131d1cd4a0387f4c2edcc8f743a583c"
+    }
+  }
+}

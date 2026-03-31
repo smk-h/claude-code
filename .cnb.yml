@@ -3,7 +3,7 @@
       - docker
     stages:
       - name: run with npc
-        image: cnbcool/default-npc-agent:latest
+        image: ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:latest
 Claude:
   issue.comment@npc: *npc
   pull_request.comment@npc: *npc

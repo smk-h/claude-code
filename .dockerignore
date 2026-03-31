@@ -6,3 +6,5 @@ claude-code-source/dist/
 *.tgz
 *.log
 .DS_Store
+.codebuddy/
+node_modules/

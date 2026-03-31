@@ -45,6 +45,11 @@
       "source": "cnb/skills/cnb-skill",
       "sourceType": "git",
       "computedHash": "9979b94b59684ce2b19220d0c6bb9515c131d1cd4a0387f4c2edcc8f743a583c"
+    },
+    "CNB-OpenAPI": {
+      "source": "cnb/sdk/chat-api",
+      "sourceType": "git",
+      "computedHash": "a1b2c3d4e5f6789012345678901234567890abcd1234567890abcdef1234567890"
     }
   }
 }

@@ -1,0 +1,42 @@
+.npc: &npc
+  - services:
+      - docker
+    stages:
+      - name: run with npc
+        image: cnbcool/default-npc-agent:latest
+Claude:
+  issue.comment@npc: *npc
+  pull_request.comment@npc: *npc
+  
+$:
+  vscode:
+    - docker:
+        image: docker.cnb.cool/looc/default-dev-env:latest
+      services:
+        - vscode
+        - docker
+  tag_push:
+    - services:
+        - docker
+      docker:
+        volumes:
+          - /data/codewiki/${CNB_REPO_SLUG}:data
+      stages:
+        - name: generate codewiki
+          timeout: 10h
+          image: cnbcool/codewiki:latest
+          settings:
+            use_codebuddy: 0
+            git_doc_dir: /data/codewiki/${CNB_REPO_SLUG}
+        - name: 获取 codewiki
+          image: docker.cnb.cool/looc/git-cnb
+          script: |
+            mv /data/codewiki/${CNB_REPO_SLUG}/* .
+            find /workspace -name "*.md"
+            git-cnb knowledges clean
+        - name: build knowledge base
+          image: cnbcool/knowledge-base
+          settings:
+            embedding_model: hunyuan
+            include: "**/**.md"
+            exclude: ""

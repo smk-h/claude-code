@@ -28,6 +28,7 @@ import {
   getVertexRegionForModel,
   isEnvTruthy,
 } from '../../utils/envUtils.js'
+import { createOpenAIAdapterFetch } from './openai-adapter.js'
 
 /**
  * Environment variables for different client types:
@@ -295,6 +296,26 @@ export async function getAnthropicClient({
     }
     // we have always been lying about the return type - this doesn't support batching or models
     return new AnthropicVertex(vertexArgs) as unknown as Anthropic
+  }
+
+  // ── OpenAI-compatible provider ──────────────────────────────────────────
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI)) {
+    const openaiBaseUrl = (
+      process.env.OPENAI_BASE_URL || 'http://localhost:8000/v1'
+    ).replace(/\/$/, '')
+
+    // We still create an Anthropic client, but with:
+    // 1. A dummy API key (the SDK requires one, but we use OPENAI_API_KEY in the adapter)
+    // 2. The adapter fetch that translates Anthropic ↔ OpenAI at the HTTP level
+    const adapterFetch = createOpenAIAdapterFetch(resolvedFetch || undefined)
+    const openaiConfig: ConstructorParameters<typeof Anthropic>[0] = {
+      apiKey: 'openai-compat-dummy-key', // SDK requires non-empty key
+      baseURL: openaiBaseUrl,
+      ...ARGS,
+      fetch: adapterFetch,
+      ...(isDebugToStdErr() && { logger: createStderrLogger() }),
+    }
+    return new Anthropic(openaiConfig)
   }
 
   // Determine authentication method based on available tokens

@@ -1,16 +1,18 @@
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../../services/analytics/index.js'
 import { isEnvTruthy } from '../envUtils.js'
 
-export type APIProvider = 'firstParty' | 'bedrock' | 'vertex' | 'foundry'
+export type APIProvider = 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'openai'
 
 export function getAPIProvider(): APIProvider {
-  return isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)
-    ? 'bedrock'
-    : isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX)
-      ? 'vertex'
-      : isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)
-        ? 'foundry'
-        : 'firstParty'
+  return isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI)
+    ? 'openai'
+    : isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)
+      ? 'bedrock'
+      : isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX)
+        ? 'vertex'
+        : isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)
+          ? 'foundry'
+          : 'firstParty'
 }
 
 export function getAPIProviderForStatsig(): AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS {
@@ -23,6 +25,10 @@ export function getAPIProviderForStatsig(): AnalyticsMetadata_I_VERIFIED_THIS_IS
  * (or api-staging.anthropic.com for ant users).
  */
 export function isFirstPartyAnthropicBaseUrl(): boolean {
+  // OpenAI-compatible mode is never a first-party Anthropic URL
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI)) {
+    return false
+  }
   const baseUrl = process.env.ANTHROPIC_BASE_URL
   if (!baseUrl) {
     return true

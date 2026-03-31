@@ -7,7 +7,7 @@
 Claude:
   issue.comment@npc: *npc
   pull_request.comment@npc: *npc
-  
+
 $:
   vscode:
     - docker:
@@ -40,3 +40,15 @@ $:
             embedding_model: hunyuan
             include: "**/**.md"
             exclude: ""
+
+dev:
+  push:
+    - services:
+        - name: docker
+          options:
+            rootlessBuildkitd:
+              enabled: true
+      stages:
+        - name: docker build & push
+          script: |
+            docker buildx build --platform linux/amd64,linux/arm64 -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:latest --push .

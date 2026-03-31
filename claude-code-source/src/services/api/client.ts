@@ -14,6 +14,7 @@ import { getUserAgent } from 'src/utils/http.js'
 import { getSmallFastModel } from 'src/utils/model/model.js'
 import {
   getAPIProvider,
+  getCnbAiBaseUrl,
   isFirstPartyAnthropicBaseUrl,
 } from 'src/utils/model/providers.js'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
@@ -296,6 +297,42 @@ export async function getAnthropicClient({
     }
     // we have always been lying about the return type - this doesn't support batching or models
     return new AnthropicVertex(vertexArgs) as unknown as Anthropic
+  }
+
+  // ── CNB platform AI provider ──────────────────────────────────────────
+  // Uses the same OpenAI-adapter as the generic OpenAI mode, but derives
+  // base URL and credentials from CNB platform environment variables:
+  //   CNB_API_ENDPOINT, CNB_REPO_SLUG, CNB_TOKEN, ACC_PRODUCT_CONFIG_V2
+  // Activate with CLAUDE_CODE_USE_CNB=1.
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_CNB)) {
+    const cnbBaseUrl = getCnbAiBaseUrl()
+    if (!cnbBaseUrl) {
+      throw new Error(
+        'CNB AI mode is enabled (CLAUDE_CODE_USE_CNB=1) but required environment variables ' +
+        'CNB_API_ENDPOINT and/or CNB_REPO_SLUG are not set.',
+      )
+    }
+
+    // CNB exposes an OpenAI-compatible /chat/completions interface.
+    // We reuse the existing OpenAI adapter — set OPENAI_* env vars so the
+    // adapter picks them up at fetch time.  This is safe because the API
+    // provider is determined once per process lifetime.
+    const cnbToken = process.env.CNB_TOKEN || ''
+    const cnbModel = process.env.CNB_AI_MODEL || process.env.ai_model || 'glm-5.0'
+
+    process.env.OPENAI_BASE_URL = cnbBaseUrl.replace(/\/$/, '')
+    process.env.OPENAI_API_KEY = cnbToken
+    process.env.OPENAI_MODEL = cnbModel
+
+    const adapterFetch = createOpenAIAdapterFetch(resolvedFetch || undefined)
+    const cnbConfig: ConstructorParameters<typeof Anthropic>[0] = {
+      apiKey: 'cnb-compat-dummy-key', // SDK requires non-empty key
+      baseURL: process.env.OPENAI_BASE_URL,
+      ...ARGS,
+      fetch: adapterFetch,
+      ...(isDebugToStdErr() && { logger: createStderrLogger() }),
+    }
+    return new Anthropic(cnbConfig)
   }
 
   // ── OpenAI-compatible provider ──────────────────────────────────────────

@@ -41,7 +41,7 @@ $:
             include: "**/**.md"
             exclude: ""
 
-dev:
+main:
   push:
     - services:
         - name: docker

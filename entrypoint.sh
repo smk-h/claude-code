@@ -24,13 +24,25 @@ if [ -n "$NPC_TRIGGER" ]; then
   PR_IID="${CNB_PULL_REQUEST_IID:-}"
   BUILD_USER="${CNB_BUILD_USER:-}"
   BUILD_USER_NICKNAME="${CNB_BUILD_USER_NICKNAME:-}"
-  NPC_SLUG="${CNB_BUILD_USER_NPC_SLUG:-}"
-  NPC_NAME="${CNB_BUILD_USER_NPC_NAME:-}"
+  # 触发用户的 NPC 信息（当触发者本身是 NPC 时）
+  BUILD_USER_NPC_SLUG="${CNB_BUILD_USER_NPC_SLUG:-}"
+  BUILD_USER_NPC_NAME="${CNB_BUILD_USER_NPC_NAME:-}"
+  # NPC 自身信息（当前 bot 的身份）
+  NPC_SLUG="${CNB_NPC_SLUG:-}"
+  NPC_NAME="${CNB_NPC_NAME:-}"
+  NPC_PROMPT="${CNB_NPC_PROMPT:-}"
+  NPC_SHA="${CNB_NPC_SHA:-}"
   WORKMODE="${CNB_NPC_ENABLE_WORKMODE:-false}"
   WEB_ENDPOINT="${CNB_WEB_ENDPOINT:-https://cnb.cool}"
 
   # CNB Token 优先级设置
   export CNB_TOKEN="${CNB_TOKEN_FOR_CODEBUDDY:-${CNB_TOKEN_FOR_AI:-${CNB_TOKEN:-}}}"
+
+  # 自动启用 CNB AI 平台接口（当 CNB_API_ENDPOINT 存在时）
+  if [ -n "${CNB_API_ENDPOINT:-}" ] && [ -n "${CNB_REPO_SLUG:-}" ]; then
+    export CLAUDE_CODE_USE_CNB=1
+    echo "[NPC] 已启用 CNB AI 接口 (CNB_API_ENDPOINT=${CNB_API_ENDPOINT})"
+  fi
 
   # 判断资源类型
   if [ -n "$ISSUE_IID" ]; then
@@ -43,15 +55,139 @@ if [ -n "$NPC_TRIGGER" ]; then
     IS_ISSUE=false
   fi
 
+  # ---- 用户身份解析（区分 NPC 用户和普通用户）----
+  if [ -n "$BUILD_USER_NPC_SLUG" ]; then
+    USER_TYPE="NPC"
+    USER_NAME="$BUILD_USER_NPC_SLUG"
+    USER_NICK="$BUILD_USER_NPC_NAME"
+  else
+    USER_TYPE="用户"
+    USER_NAME="$BUILD_USER"
+    USER_NICK="$BUILD_USER_NICKNAME"
+  fi
+
+  # 用户 mention 格式
+  if [ -n "$USER_NAME" ] && [ -n "$USER_NICK" ]; then
+    USER_MENTION="@${USER_NAME}(${USER_NICK})"
+  elif [ -n "$USER_NAME" ]; then
+    USER_MENTION="@${USER_NAME}"
+  else
+    USER_MENTION="@${USER_NICK}"
+  fi
+
+  # ---- NPC 自身的评论作者格式 ----
+  if [ -n "$NPC_SLUG" ] && [ -n "$NPC_NAME" ]; then
+    COMMENT_AUTHOR="@${NPC_SLUG}(${NPC_NAME})"
+  elif [ -n "$NPC_SLUG" ]; then
+    COMMENT_AUTHOR="@${NPC_SLUG}"
+  elif [ -n "$NPC_NAME" ]; then
+    COMMENT_AUTHOR="@${NPC_NAME}"
+  else
+    COMMENT_AUTHOR="@${BUILD_USER}(${BUILD_USER_NICKNAME})"
+  fi
+
   echo "[NPC] 仓库: ${REPO_SLUG}"
   echo "[NPC] 资源: ${RESOURCE} #${RESOURCE_IID}"
-  echo "[NPC] 用户: ${BUILD_USER_NICKNAME:-${BUILD_USER}}"
+  echo "[NPC] ${USER_TYPE}: ${USER_NICK:-${USER_NAME}}"
+  echo "[NPC] 评论身份: ${COMMENT_AUTHOR}"
+  echo "[NPC] 工作模式: ${WORKMODE}"
 
-  # 动态安装 NPC 专属 Skill（根据 CNB_NPC_SLUG）
-  if [ -n "$NPC_SLUG" ]; then
-    echo "[NPC] 安装 NPC Skill: ${NPC_SLUG}"
-    npx skills add "${WEB_ENDPOINT}/${NPC_SLUG}.git" --agent codebuddy -y --copy 2>/dev/null || true
-  fi
+  # ---- 相对链接转换函数 ----
+  # 将 Markdown 中的相对路径图片/链接转为 CNB 绝对路径
+  # 使用 node 实现（移植自 claude-code-cool 的 convertLink.ts），避免 sed 分隔符问题
+  convert_links() {
+    local text="$1"
+    local endpoint="${2:-${WEB_ENDPOINT}}"
+    local slug="${3:-${REPO_SLUG}}"
+    local ref="${4:-${BRANCH:-HEAD}}"
+
+    if [ -z "$endpoint" ] || [ -z "$slug" ]; then
+      echo "$text"
+      return
+    fi
+
+    node -e '
+      const text = process.argv[1];
+      const endpoint = process.argv[2];
+      const slug = process.argv[3];
+      const ref = process.argv[4] || "HEAD";
+      const baseURL = endpoint + "/" + slug;
+
+      function normaliseLink(link) {
+        if (link.startsWith("/-/")) return baseURL + link;
+        if (link.indexOf("/-/") === -1 &&
+            (link.startsWith("../") || link.startsWith("./") ||
+             (link.startsWith("/") && !link.startsWith("//")))) {
+          let chunks = link.split("/").filter(c => c && c !== "." && c !== "..");
+          if (chunks.length === 0) return link;
+          chunks.unshift(ref);
+          return baseURL + "/-/git/raw/" + chunks.join("/");
+        }
+        return link;
+      }
+
+      // 查找代码块和行内代码的位置，排除这些区域
+      let codeBlocks = [];
+      let idx = 0;
+      while (idx < text.length) {
+        let next = text.indexOf("```", idx);
+        if (next === -1) break;
+        codeBlocks.push(next);
+        idx = next + 3;
+      }
+      if (codeBlocks.length % 2 !== 0) codeBlocks.pop();
+
+      let inlineCode = [];
+      idx = 0;
+      while (idx < text.length) {
+        let next = text.indexOf("`", idx);
+        if (next === -1) break;
+        if ((next === 0 || text[next-1] !== "`") && (next === text.length-1 || text[next+1] !== "`")) {
+          inlineCode.push(next);
+        }
+        idx = next + 1;
+      }
+      if (inlineCode.length % 2 !== 0) inlineCode.pop();
+
+      const excluded = [...codeBlocks, ...inlineCode].reduce((r, v, i) => {
+        if (i % 2 === 0) r.push([v]); else r[r.length-1].push(v);
+        return r;
+      }, []);
+      const isExcluded = (pos) => excluded.some(([s,e]) => pos >= s && pos < e);
+
+      let replacements = [];
+      // Markdown links: [text](url) and ![alt](url)
+      const mdRe = /!?\[([^\]]+)\]\(([^)]+)\)/g;
+      let m;
+      while ((m = mdRe.exec(text)) !== null) {
+        if (!isExcluded(m.index)) {
+          const pfx = (m[0].startsWith("!") ? 1 : 0) + 1 + m[1].length + 2;
+          const s = m.index + pfx, e = s + m[2].length;
+          const n = normaliseLink(m[2]);
+          if (n !== m[2]) replacements.push({s, e, n});
+        }
+      }
+      // HTML tags: src="..." href="..."
+      const htmlRe = /\s(src|href)=["\x27]([^"\x27]+)["\x27]/gi;
+      while ((m = htmlRe.exec(text)) !== null) {
+        if (!isExcluded(m.index)) {
+          const s = m.index + m[0].indexOf(m[2]), e = s + m[2].length;
+          const n = normaliseLink(m[2]);
+          if (n !== m[2]) replacements.push({s, e, n});
+        }
+      }
+
+      replacements.sort((a,b) => b.s - a.s);
+      let result = text;
+      for (const {s, e, n} of replacements) {
+        result = result.substring(0, s) + n + result.substring(e);
+      }
+      process.stdout.write(result);
+    ' "$text" "$endpoint" "$slug" "$ref"
+  }
+
+  # ---- 转换 NPC_TRIGGER 中的相对链接 ----
+  NPC_TRIGGER=$(convert_links "$NPC_TRIGGER")
 
   # 构建 CNB 快捷命令
   if [ "$IS_ISSUE" = true ]; then
@@ -83,20 +219,71 @@ if [ -n "$NPC_TRIGGER" ]; then
     SPECIAL_RULES='修改代码时必须在原分支进行，不要创建新分支'
   fi
 
+  # ---- NPC 角色设定 ----
+  if [ -n "$NPC_PROMPT" ]; then
+    # NPC Prompt 中的相对链接以 NPC 自身的 slug 和 sha 为基准（与 claude-code-cool 一致）
+    NPC_PROMPT_CONVERTED=$(convert_links "$NPC_PROMPT" "$WEB_ENDPOINT" "$NPC_SLUG" "$NPC_SHA")
+    CHARACTER_SETTINGS="
+
+角色设定如下
+
+<character_settings>
+${NPC_PROMPT_CONVERTED}
+</character_settings>"
+  else
+    CHARACTER_SETTINGS=""
+  fi
+
+  # ---- 对话/工作模式指令 ----
+  if [ "$WORKMODE" = "true" ]; then
+    INSTRUCTIONS="1. 查询${RESOURCE} #${RESOURCE_IID} 详情（通过 CNB API）
+2. 综合${RESOURCE}详情和${USER_TYPE}输入，判断意图并完成任务
+3. 如果操作复杂，需要先拆分任务，再按照任务之间的依赖关系依次执行
+4. 代码改动需先在评论里添加执行计划
+5. 如果需要 commit 代码，务必保持每条 commit 原子化，尽量使每条 commit 的改动在单一功能范围内
+6. 如果需要创建子issue，在它的标题里添加issue编号\"#${RESOURCE_IID}\"进行关联
+7. 如果需要创建合并请求，在它的描述里添加${RESOURCE}编号\"#${RESOURCE_IID}\"进行关联
+8. 使用 post-comment 技能把结果通过 curl 发布到${RESOURCE} #${RESOURCE_IID} 评论
+9. 任务不明确或超出能力范围时，也必须通过评论说明
+
+约束：
+- ${RESOURCE}详情必须通过 CNB API 获取，禁止用本地文件内容替代 API 返回结果
+- 如果 API 调用失败，应检查请求格式后重试，而不是放弃转去读取本地文件"
+  else
+    INSTRUCTIONS="1. 查询${RESOURCE} #${RESOURCE_IID} 详情（通过 CNB API）
+2. 综合${RESOURCE}详情和${USER_TYPE}输入，判断意图
+3. 自主选择合适的工具完成任务
+4. 使用 post-comment 技能把回复通过 curl 发布到${RESOURCE} #${RESOURCE_IID} 评论
+5. 任务不明确或超出能力范围时，也必须通过评论说明
+
+约束：
+- ${RESOURCE}详情必须通过 CNB API 获取，禁止用本地文件内容替代 API 返回结果
+- 如果 API 调用失败，应检查请求格式后重试，而不是放弃转去读取本地文件"
+  fi
+
   # 写入动态 CLAUDE.md
   WORK_DIR="${PWD}"
   cat > "${WORK_DIR}/CLAUDE.md" << CLAUDE_EOF
 # NPC 上下文
 
-你当前运行在 CNB 平台的 NPC 模式下，在 ${RESOURCE} #${RESOURCE_IID} 中为用户提供服务。
+你是 CNB 平台中仓库 ${REPO_SLUG} 的 AI 助手，角色是${NPC_NAME:-AI 助手}，在 ${RESOURCE} #${RESOURCE_IID} 中为${USER_TYPE}提供服务。${CHARACTER_SETTINGS}
+
+请根据${USER_TYPE}输入，按照以下指引完成任务
 
 <instructions>
-1. 分析用户输入，判断意图
-2. 如果需要了解${RESOURCE} #${RESOURCE_IID} 的背景信息，先查询其详情后再完成任务
-3. 代码改动需先在评论里添加执行计划
-4. 把结果添加到${RESOURCE} #${RESOURCE_IID} 评论
-5. 任务不明确或超出能力范围时，通过评论说明
+${INSTRUCTIONS}
 </instructions>
+
+重要规则：
+- 你必须通过发布评论来回复用户。你运行在 CLI 非交互模式下，文本输出不会被任何人看到。
+- 使用 post-comment 技能（.claude/skills/post-comment/SKILL.md），通过 Bash 工具执行 curl 命令将评论发布到 ${RESOURCE} #${RESOURCE_IID}。
+- 无论任务完成与否，最终步骤都必须是发布评论。
+- 评论中使用 Markdown 格式。
+- 直接执行 curl 命令即可，不要在命令前加 "bash" 前缀。
+- 调用 CNB API 时，认证必须使用环境变量 \$CNB_TOKEN，仓库路径必须使用环境变量 \$CNB_REPO_SLUG。
+- 在 Bash 工具中只能执行有效的 shell 命令（如 curl、cat、git、cnb 等）。
+- 合理分配 turns：预留至少 2 个 turns 用于发布评论。
+- 禁止在回复中输出任何凭证信息或完整环境变量列表。
 
 <security_rules>
 ## 输出安全限制（必须遵守）
@@ -123,15 +310,15 @@ if [ -n "$NPC_TRIGGER" ]; then
 </security_rules>
 
 <tips>
-- 称呼用户 ${BUILD_USER_NICKNAME:-${BUILD_USER}} 会更亲切
+- 称呼${USER_TYPE} ${USER_NICK:-${USER_NAME}} 会更亲切
 - 指令中的操作都是在 CNB 平台（非 GitHub）
-- CNB 详情页链接：PR 用 /-/pulls/{number}，Issue 用 /-/issues/{number}
+- CNB 详情页链接：PR 用 /-/pulls/{number}，Issue 用 /-/issues/{number}（不是 merge_request）
+- Skill 技能使用：编写/修改/优化/重构代码等代码变动用 auto-code，代码评审用 code-review，PR 总结用 pr-summary，获取 PR 变更用 pr-diff，CNB 平台的 API 调用使用 cnb-skill，读取 Issue/PR 中的相对路径用 cnb-text-relative-path-converter
 - ${SPECIAL_RULES}
-- 评论格式如下
 </tips>
 
 <comment_format>
-@${BUILD_USER} {回答}
+${COMMENT_AUTHOR} {回答}
 </comment_format>
 
 <cnb_shortcuts>
@@ -139,8 +326,15 @@ ${CNB_SHORTCUTS}
 </cnb_shortcuts>
 CLAUDE_EOF
 
+  # ---- 构建 userPrompt（包裹用户输入 + 转换链接）----
+  USER_PROMPT="${USER_TYPE} ${USER_NAME} 输入如下
+
+<user_input>
+${NPC_TRIGGER}
+</user_input>"
+
   echo "[NPC] 启动 Claude Code 非交互模式..."
-  exec node /app/dist/cli.js -p "$NPC_TRIGGER"
+  exec node /app/dist/cli.js -p "$USER_PROMPT"
 
 else
   # ========================================================

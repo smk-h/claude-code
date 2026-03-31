@@ -600,11 +600,16 @@ export function createOpenAIAdapterFetch(
 
     // Build headers
     const apiKey = process.env.OPENAI_API_KEY || ''
+    const isCnbMode = process.env.CLAUDE_CODE_USE_CNB === '1'
     // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
     const headers = new Headers()
     headers.set('Content-Type', 'application/json')
     if (apiKey) {
-      headers.set('Authorization', `Bearer ${apiKey}`)
+      // CNB uses raw token (no Bearer prefix); standard OpenAI uses Bearer
+      headers.set('Authorization', isCnbMode ? apiKey : `Bearer ${apiKey}`)
+    }
+    if (isCnbMode) {
+      headers.set('Accept', 'application/vnd.cnb.api+json')
     }
     // Forward custom headers if any
     if (init?.headers) {

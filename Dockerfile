@@ -1,46 +1,60 @@
-# ============================================
-# Stage 1: Build
-# ============================================
+# ============================================================
+# Stage 1: Build — 使用 Bun 安装依赖 + 打包
+# ============================================================
 FROM oven/bun:1 AS builder
 
-# Install pnpm
-RUN corepack enable && corepack prepare pnpm@latest --activate
-
 WORKDIR /app
 
-# Copy source code
+# 1. 先复制依赖清单，利用 Docker 缓存层
 COPY claude-code-source/package.json claude-code-source/pnpm-lock.yaml ./
+
+# 2. 用 bun 安装依赖（兼容 pnpm lockfile，速度更快）
+RUN bun install --frozen-lockfile
+
+# 3. 复制源码和构建脚本
 COPY claude-code-source/src/ ./src/
 COPY claude-code-source/vendor/ ./vendor/
-COPY claude-code-source/build.ts ./build.ts
-COPY claude-code-source/tsconfig.json ./tsconfig.json
+COPY claude-code-source/build.ts claude-code-source/tsconfig.json ./
 
-# Install dependencies
-RUN pnpm install --frozen-lockfile --registry https://registry.npmjs.org
-
-# Apply commander compatibility patch
-# commander v14 only allows single-char short options by default,
-# but the source code uses multi-char short options like '-d2e'.
-# Patch the regex from /^-[^-]$/ to /^-[^-]+$/
-RUN sed -i 's|/\\^-\\[\\^-\\]\\$/|/^-[^-]+$/|' node_modules/commander/lib/option.js
-
-# Build
+# 4. 执行构建
 RUN bun run build.ts
 
-# ============================================
-# Stage 2: Runtime
-# ============================================
-FROM node:20-slim AS runtime
+# ============================================================
+# Stage 2: Runtime — 精简的 Node.js 运行环境
+# ============================================================
+FROM node:22-slim AS runtime
 
 WORKDIR /app
 
-# Install sharp as optional runtime dependency (marked external in build.ts)
-RUN npm install --no-save sharp@latest
+# 安装运行时可能需要的工具（git 是 claude-code 核心依赖）
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        git \
+        ca-certificates \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy build output from builder
-COPY --from=builder /app/dist/cli.js ./dist/cli.js
+# 从 builder 复制构建产物
+COPY --from=builder /app/dist/cli.js /app/dist/cli.js
+COPY --from=builder /app/dist/cli.js.map /app/dist/cli.js.map
 
-# Set environment variables
-ENV NODE_NO_WARNINGS=1
+# 从 builder 复制 node_modules（运行时 external 依赖如 sharp 需要）
+COPY --from=builder /app/node_modules /app/node_modules
 
-ENTRYPOINT ["node", "dist/cli.js"]
+# 复制 package.json（Node.js ESM 需要 "type": "module"）
+COPY claude-code-source/package.json ./
+
+# 让 cli.js 可执行
+RUN chmod +x /app/dist/cli.js
+
+# 设置环境变量
+ENV NODE_ENV=production
+# 用户需要在运行时传入 API Key:
+#   docker run -e ANTHROPIC_API_KEY="sk-ant-..." claude-code
+ENV ANTHROPIC_API_KEY=""
+
+# 工作目录挂载点（用户项目目录）
+VOLUME ["/workspace"]
+WORKDIR /workspace
+
+ENTRYPOINT ["node", "/app/dist/cli.js"]

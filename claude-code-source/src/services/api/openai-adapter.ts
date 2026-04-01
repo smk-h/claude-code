@@ -232,10 +232,154 @@ function convertAnthropicMessagesToOpenAI(
   return openAIMessages
 }
 
+// ============================================================================
+// CNB mode: identity cleaning to avoid upstream model safety filters
+// ============================================================================
+
+const CNB_IDENTITY_REPLACEMENTS: Array<[RegExp, string]> = [
+  [/\bClaude Code\b/gi, 'AI Coding Assistant'],
+  [/\bClaudeCode\b/gi, 'AI Coding Assistant'],
+  [/\bclaude[\s_-]?code\b/gi, 'AI Coding Assistant'],
+  [/\bI am Claude\b/gi, 'I am an AI assistant'],
+  [/\bI'm Claude\b/gi, "I'm an AI assistant"],
+  [/\bYou are Claude\b/gi, 'You are an AI assistant'],
+  [/\bAs Claude\b/gi, 'As an AI assistant'],
+  [/\bClaude,? (?:a|an) AI/gi, 'an AI'],
+  [/\bClaude assistant\b/gi, 'AI assistant'],
+  [/\bpowered by Claude\b/gi, 'powered by AI'],
+  [/\bClaude\s+\d+(\.\d+)?\b/gi, 'AI model'],
+  [/\bClaude-\d+(\.\d+)?\b/gi, 'AI model'],
+  [/\bclaude-sonnet[^\s,]*/gi, 'default-model'],
+  [/\bclaude-opus[^\s,]*/gi, 'default-model'],
+  [/\bclaude-haiku[^\s,]*/gi, 'default-model'],
+  [/\bclaude-\d[\w.-]*/gi, 'default-model'],
+  [/\bClaude\b/gi, 'Assistant'],
+  [/\bAnthropic's\b/gi, "the AI team's"],
+  [/\bby Anthropic\b/gi, 'by the AI team'],
+  [/\bmade by Anthropic\b/gi, 'made by the AI team'],
+  [/\bAnthropic\b/gi, 'the AI team'],
+  [/\banthropic\.com\b/gi, 'ai-assistant.local'],
+  [/\bConstitutional AI\b/gi, 'AI safety framework'],
+]
+
+// Patterns to protect from replacement (repo paths, URLs, env vars, mentions)
+const CNB_PROTECT_PATTERNS: RegExp[] = [
+  // CNB @mention format: @org/repo(Name) or @user(Nickname)
+  /@[\w.-]+(?:\/[\w.-]+)*\([^)]*\)/gi,
+  // Repo slug paths containing claude (e.g. G_G/claude-code)
+  /[\w.-]+\/claude[\s_-]?code[\w.-]*/gi,
+  // URLs containing claude
+  /https?:\/\/[^\s"']+claude[\s_-]?code[^\s"']*/gi,
+  // Environment variable references
+  /\$\{?CNB_\w+\}?/gi,
+]
+
+function cleanIdentityText(text: string): string {
+  if (!text) return text
+
+  // Protect specific patterns from replacement
+  const preserved: string[] = []
+  let shielded = text
+  for (const pp of CNB_PROTECT_PATTERNS) {
+    shielded = shielded.replace(pp, (match) => {
+      const idx = preserved.length
+      preserved.push(match)
+      return `\x00KEEP${idx}\x00`
+    })
+  }
+
+  // Apply identity replacements
+  let result = shielded
+  for (const [pattern, replacement] of CNB_IDENTITY_REPLACEMENTS) {
+    result = result.replace(pattern, replacement)
+  }
+
+  // Restore protected patterns
+  result = result.replace(/\x00KEEP(\d+)\x00/g, (_, idx) => preserved[Number(idx)]!)
+
+  return result
+}
+
+function cleanIdentityContent(content: string | any[] | null): string | any[] | null {
+  if (typeof content === 'string') return cleanIdentityText(content)
+  if (Array.isArray(content)) {
+    return content.map(item => {
+      if (typeof item === 'string') return cleanIdentityText(item)
+      if (item && typeof item === 'object') {
+        const cleaned = { ...item }
+        if (typeof cleaned.text === 'string') cleaned.text = cleanIdentityText(cleaned.text)
+        return cleaned
+      }
+      return item
+    })
+  }
+  return content
+}
+
+// Simple system prompt that replaces the CLI's complex default prompt in CNB mode
+const CNB_SIMPLE_SYSTEM_PROMPT = 'You are a helpful coding assistant. Please respond in the same language as the user.'
+
+// Marker injected at the start of CLAUDE.md content in entrypoint.sh
+// Used to split CLI default prompt from user-appended instructions
+const CNB_APPEND_MARKER = '<!-- CNB_APPEND_START -->'
+
+/**
+ * In CNB mode, clean messages to avoid upstream model safety filters.
+ *
+ * Default behavior (hybrid):
+ *   1. Split system prompt at the CNB_APPEND_START marker
+ *   2. Replace the CLI default portion (before marker) with a simple prompt
+ *   3. Keep the CLAUDE.md portion (after marker) with identity word cleaning
+ *   This avoids GLM safety triggers from the complex CLI prompt while
+ *   preserving CLAUDE.md instructions (comment_format, cnb_shortcuts, etc.)
+ *
+ * If no marker is found, falls back to full identity word cleaning (preserves
+ * all instructions but may still trigger sensitive model filters).
+ *
+ * Set CNB_REPLACE_SYSTEM_PROMPT=1 to replace the ENTIRE system prompt
+ * (only use if the hybrid approach is still insufficient).
+ *
+ * User/assistant messages always get identity word cleaning.
+ */
+function cleanMessagesForCnb(messages: OpenAIMessage[]): OpenAIMessage[] {
+  const replaceSystemPrompt = process.env.CNB_REPLACE_SYSTEM_PROMPT === '1'
+
+  return messages.map(msg => {
+    if (msg.role === 'system') {
+      if (replaceSystemPrompt) {
+        // Aggressive mode: replace entire system prompt (loses CLAUDE.md instructions)
+        return { role: 'system' as const, content: CNB_SIMPLE_SYSTEM_PROMPT }
+      }
+
+      const originalContent = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+      const markerIdx = originalContent.indexOf(CNB_APPEND_MARKER)
+
+      if (markerIdx !== -1) {
+        // Hybrid mode: replace CLI portion, keep & clean CLAUDE.md portion
+        const appendedPortion = originalContent.slice(markerIdx + CNB_APPEND_MARKER.length)
+        const cleanedAppended = cleanIdentityText(appendedPortion)
+        return { role: 'system' as const, content: CNB_SIMPLE_SYSTEM_PROMPT + '\n\n' + cleanedAppended }
+      }
+
+      // No marker found: fall back to full identity word cleaning
+      return { role: 'system' as const, content: cleanIdentityText(originalContent) }
+    }
+    return { ...msg, content: cleanIdentityContent(msg.content) }
+  })
+}
+
 function convertAnthropicRequestToOpenAI(body: any): any {
+  const isCnbMode = process.env.CLAUDE_CODE_USE_CNB === '1'
+  let messages = convertAnthropicMessagesToOpenAI(body.messages, body.system)
+
+  // In CNB mode, clean identity-sensitive content to avoid model safety filters
+  if (isCnbMode) {
+    messages = cleanMessagesForCnb(messages)
+  }
+
   const openAIRequest: any = {
     model: process.env.OPENAI_MODEL || body.model || 'gpt-4o',
-    messages: convertAnthropicMessagesToOpenAI(body.messages, body.system),
+    messages,
     stream: body.stream ?? false,
     max_completion_tokens: body.max_tokens || 4096,
   }

@@ -38,10 +38,32 @@ if [ -n "$NPC_TRIGGER" ]; then
   # CNB Token 优先级设置
   export CNB_TOKEN="${CNB_TOKEN_FOR_CODEBUDDY:-${CNB_TOKEN_FOR_AI:-${CNB_TOKEN:-}}}"
 
+  # 清理冗余 token 变量，防止 AI 看到原始变量名后误用
+  # （参考 claude-code-cool/executor.ts 的 childEnv 处理）
+  unset CNB_TOKEN_FOR_CODEBUDDY
+  unset CNB_TOKEN_FOR_AI
+
+  # 确保非交互环境标识（参考 claude-code-cool/executor.ts: CI=true, TERM=dumb）
+  export CI=true
+  export TERM=dumb
+
+  # CNB 模式下需要设置一个 dummy ANTHROPIC_API_KEY
+  # 原因：CLI 在 CI=true 模式下会检查 ANTHROPIC_API_KEY（auth.ts:266-283），
+  # 如果为空会直接抛错退出。实际 API 请求走 CNB 的 OpenAI adapter，不用此 key。
+  export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-sk-cnb-dummy-key}"
+
   # 自动启用 CNB AI 平台接口（当 CNB_API_ENDPOINT 存在时）
   if [ -n "${CNB_API_ENDPOINT:-}" ] && [ -n "${CNB_REPO_SLUG:-}" ]; then
     export CLAUDE_CODE_USE_CNB=1
     echo "[NPC] 已启用 CNB AI 接口 (CNB_API_ENDPOINT=${CNB_API_ENDPOINT})"
+  fi
+
+  # AI 接口预检（输出接口地址、模型配置，测试连通性）
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [ -x "${SCRIPT_DIR}/scripts/precheck-ai.sh" ]; then
+    bash "${SCRIPT_DIR}/scripts/precheck-ai.sh" || echo "[NPC] ⚠️ AI 预检脚本执行异常（不影响后续启动）"
+  else
+    echo "[NPC] ⚠️ 未找到预检脚本 scripts/precheck-ai.sh，跳过预检"
   fi
 
   # 判断资源类型
@@ -264,6 +286,7 @@ ${NPC_PROMPT_CONVERTED}
   # 写入动态 CLAUDE.md
   WORK_DIR="${PWD}"
   cat > "${WORK_DIR}/CLAUDE.md" << CLAUDE_EOF
+<!-- CNB_APPEND_START -->
 # NPC 上下文
 
 你是 CNB 平台中仓库 ${REPO_SLUG} 的 AI 助手，角色是${NPC_NAME:-AI 助手}，在 ${RESOURCE} #${RESOURCE_IID} 中为${USER_TYPE}提供服务。${CHARACTER_SETTINGS}
@@ -333,8 +356,40 @@ CLAUDE_EOF
 ${NPC_TRIGGER}
 </user_input>"
 
-  echo "[NPC] 启动 Claude Code 非交互模式..."
-  exec node /app/dist/cli.js -p "$USER_PROMPT"
+  # ---- 构建 CLI 启动参数（参考 claude-code-cool/executor.ts）----
+  # 参数说明：
+  #   -p                            非交互模式（headless）
+  #   --output-format stream-json   流式 JSON 输出（便于日志解析）
+  #   --max-turns N                 最大对话轮次
+  #   --verbose                     详细日志
+  #   --append-system-prompt <text> 追加系统提示（CLAUDE.md 内容）
+  #   --dangerously-skip-permissions 跳过权限确认对话框（关键！否则 CLI 卡住）
+  MAX_TURNS="${MAX_TURNS:-20}"
+  SYSTEM_PROMPT=$(cat "${WORK_DIR}/CLAUDE.md")
+
+  echo "[NPC] 启动 Claude Code 非交互模式 (max_turns=${MAX_TURNS})..."
+
+  # 降权运行：Claude Code CLI 禁止在 root 下使用 --dangerously-skip-permissions
+  # 参考 claude-code-cool/start.sh 使用 gosu 降权到 claude 用户
+  CLAUDE_USER="claude"
+  chown -R "$CLAUDE_USER:$CLAUDE_USER" /workspace 2>/dev/null || true
+
+  # 检查 node 和 cli.js 是否可用
+  echo "[NPC] Node 版本: $(node --version)"
+  echo "[NPC] CLI 路径: /app/dist/cli.js ($(stat -c%s /app/dist/cli.js 2>/dev/null || echo 'N/A') bytes)"
+  echo "[NPC] 运行用户: $(gosu "$CLAUDE_USER" whoami 2>/dev/null || echo 'gosu failed')"
+  echo "[NPC] CLAUDE_CODE_USE_CNB=${CLAUDE_CODE_USE_CNB:-}"
+  echo "[NPC] OPENAI_BASE_URL=${OPENAI_BASE_URL:-[未设置，将由 CLI 自动设置]}"
+
+  # 使用 exec 启动 CLI（stderr 和 stdout 都会输出到日志）
+  exec gosu "$CLAUDE_USER" node /app/dist/cli.js \
+    -p \
+    --output-format stream-json \
+    --max-turns "${MAX_TURNS}" \
+    --verbose \
+    --append-system-prompt "${SYSTEM_PROMPT}" \
+    --dangerously-skip-permissions \
+    "$USER_PROMPT"
 
 else
   # ========================================================

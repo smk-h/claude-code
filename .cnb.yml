@@ -12,6 +12,7 @@
           CNB_REPLACE_SYSTEM_PROMPT: 1
           CNB_DEBUG_SYSTEM_PROMPT: 1
           CNB_CUSTOM_SYSTEM_PROMPT: "You are a helpful coding assistant."
+          MAX_TURNS: 200
 
 Claude:
   issue.comment@npc: *npc

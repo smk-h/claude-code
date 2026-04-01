@@ -300,14 +300,65 @@ function cleanIdentityText(text: string): string {
   return result
 }
 
+/**
+ * Remove transport noise from user messages (NPC lines, JSON event envelopes).
+ * These can trigger model safety filters when accidentally pasted into prompts.
+ */
+function stripTransportNoise(text: string): string {
+  if (!text) return text
+
+  const lines = text.split('\n')
+  const filtered = lines.filter(line => {
+    const trimmed = line.trim()
+    
+    // Filter [NPC] debug lines
+    if (trimmed.startsWith('[NPC]')) {
+      return false
+    }
+
+    // Filter JSON event envelopes: {"type":"system","subtype":"init",...}
+    // or {"type":"assistant",...} or {"type":"result",...}
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      try {
+        const parsed = JSON.parse(trimmed) as Record<string, unknown>
+        if (typeof parsed.type !== 'string') return true
+
+        // Common event types from CLI output
+        if (
+          (parsed.type === 'system' && parsed.subtype === 'init') ||
+          (parsed.type === 'assistant' && parsed.message) ||
+          (parsed.type === 'result' && parsed.result !== undefined)
+        ) {
+          return false
+        }
+      } catch {
+        // Not valid JSON, keep the line
+      }
+    }
+
+    return true
+  })
+
+  return filtered.join('\n').trim()
+}
+
 function cleanIdentityContent(content: string | any[] | null): string | any[] | null {
-  if (typeof content === 'string') return cleanIdentityText(content)
+  if (typeof content === 'string') {
+    const noiseStripped = stripTransportNoise(content)
+    return cleanIdentityText(noiseStripped)
+  }
   if (Array.isArray(content)) {
     return content.map(item => {
-      if (typeof item === 'string') return cleanIdentityText(item)
+      if (typeof item === 'string') {
+        const noiseStripped = stripTransportNoise(item)
+        return cleanIdentityText(noiseStripped)
+      }
       if (item && typeof item === 'object') {
         const cleaned = { ...item }
-        if (typeof cleaned.text === 'string') cleaned.text = cleanIdentityText(cleaned.text)
+        if (typeof cleaned.text === 'string') {
+          const noiseStripped = stripTransportNoise(cleaned.text)
+          cleaned.text = cleanIdentityText(noiseStripped)
+        }
         return cleaned
       }
       return item
@@ -316,8 +367,22 @@ function cleanIdentityContent(content: string | any[] | null): string | any[] | 
   return content
 }
 
-// Simple system prompt that replaces the CLI's complex default prompt in CNB mode
-const CNB_SIMPLE_SYSTEM_PROMPT = 'You are a helpful coding assistant. Please respond in the same language as the user.'
+// Default simple system prompt that replaces the CLI's complex default prompt in CNB mode
+const CNB_DEFAULT_SIMPLE_SYSTEM_PROMPT = 'You are a helpful coding assistant. Please respond in the same language as the user.'
+
+/**
+ * Get the base system prompt for CNB mode.
+ *
+ * Priority (highest → lowest):
+ *   1. CNB_CUSTOM_SYSTEM_PROMPT env var — fully custom base prompt
+ *   2. CNB_DEFAULT_SIMPLE_SYSTEM_PROMPT constant — safe default
+ *
+ * This only controls the "base" portion. In hybrid mode, CLAUDE.md content
+ * (after the CNB_APPEND_START marker) is always appended after this base.
+ */
+function getCnbBaseSystemPrompt(): string {
+  return process.env.CNB_CUSTOM_SYSTEM_PROMPT || CNB_DEFAULT_SIMPLE_SYSTEM_PROMPT
+}
 
 // Marker injected at the start of CLAUDE.md content in entrypoint.sh
 // Used to split CLI default prompt from user-appended instructions
@@ -326,29 +391,39 @@ const CNB_APPEND_MARKER = '<!-- CNB_APPEND_START -->'
 /**
  * In CNB mode, clean messages to avoid upstream model safety filters.
  *
- * Default behavior (hybrid):
- *   1. Split system prompt at the CNB_APPEND_START marker
- *   2. Replace the CLI default portion (before marker) with a simple prompt
- *   3. Keep the CLAUDE.md portion (after marker) with identity word cleaning
- *   This avoids GLM safety triggers from the complex CLI prompt while
- *   preserving CLAUDE.md instructions (comment_format, cnb_shortcuts, etc.)
+ * System prompt handling (3 modes):
  *
- * If no marker is found, falls back to full identity word cleaning (preserves
- * all instructions but may still trigger sensitive model filters).
+ * 1. **Hybrid mode** (default, recommended):
+ *    Split system prompt at the CNB_APPEND_START marker.
+ *    - Before marker (CLI default prompt) → replaced with base prompt
+ *    - After marker (CLAUDE.md content) → kept with identity word cleaning
+ *    The base prompt is CNB_CUSTOM_SYSTEM_PROMPT if set, otherwise the
+ *    built-in default.
  *
- * Set CNB_REPLACE_SYSTEM_PROMPT=1 to replace the ENTIRE system prompt
- * (only use if the hybrid approach is still insufficient).
+ * 2. **Replace mode** (CNB_REPLACE_SYSTEM_PROMPT=1):
+ *    Replace the ENTIRE system prompt with the base prompt (loses all
+ *    CLAUDE.md instructions). Use only when hybrid mode is insufficient.
+ *
+ * 3. **Fallback** (no marker found):
+ *    Apply full identity word cleaning to the entire system prompt.
+ *
+ * Environment variables:
+ *   - CNB_CUSTOM_SYSTEM_PROMPT: Custom base system prompt text. Replaces
+ *     the CLI's complex default prompt while preserving CLAUDE.md content.
+ *   - CNB_REPLACE_SYSTEM_PROMPT=1: Aggressive mode — replaces everything
+ *     with just the base prompt (ignores CLAUDE.md).
  *
  * User/assistant messages always get identity word cleaning.
  */
 function cleanMessagesForCnb(messages: OpenAIMessage[]): OpenAIMessage[] {
   const replaceSystemPrompt = process.env.CNB_REPLACE_SYSTEM_PROMPT === '1'
+  const basePrompt = getCnbBaseSystemPrompt()
 
   return messages.map(msg => {
     if (msg.role === 'system') {
       if (replaceSystemPrompt) {
         // Aggressive mode: replace entire system prompt (loses CLAUDE.md instructions)
-        return { role: 'system' as const, content: CNB_SIMPLE_SYSTEM_PROMPT }
+        return { role: 'system' as const, content: basePrompt }
       }
 
       const originalContent = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
@@ -358,11 +433,23 @@ function cleanMessagesForCnb(messages: OpenAIMessage[]): OpenAIMessage[] {
         // Hybrid mode: replace CLI portion, keep & clean CLAUDE.md portion
         const appendedPortion = originalContent.slice(markerIdx + CNB_APPEND_MARKER.length)
         const cleanedAppended = cleanIdentityText(appendedPortion)
-        return { role: 'system' as const, content: CNB_SIMPLE_SYSTEM_PROMPT + '\n\n' + cleanedAppended }
+        const hybridPrompt = basePrompt + '\n\n' + cleanedAppended
+        
+        // Debug: log hybrid prompt length to help diagnose safety filter issues
+        if (process.env.CNB_DEBUG_SYSTEM_PROMPT === '1') {
+          console.error(`[CNB] Hybrid system prompt: ${hybridPrompt.length} chars (base: ${basePrompt.length}, appended: ${cleanedAppended.length})`)
+          console.error(`[CNB] Prompt preview: ${hybridPrompt.slice(0, 500)}...`)
+        }
+        
+        return { role: 'system' as const, content: hybridPrompt }
       }
 
       // No marker found: fall back to full identity word cleaning
-      return { role: 'system' as const, content: cleanIdentityText(originalContent) }
+      const cleanedFull = cleanIdentityText(originalContent)
+      if (process.env.CNB_DEBUG_SYSTEM_PROMPT === '1') {
+        console.error(`[CNB] Fallback system prompt: ${cleanedFull.length} chars (original: ${originalContent.length})`)
+      }
+      return { role: 'system' as const, content: cleanedFull }
     }
     return { ...msg, content: cleanIdentityContent(msg.content) }
   })

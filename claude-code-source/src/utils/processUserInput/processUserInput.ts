@@ -59,6 +59,81 @@ import {
   replaceUltraplanKeyword,
 } from '../ultraplan/keyword.js'
 import { processTextPrompt } from './processTextPrompt.js'
+
+function isTransportJsonNoiseLine(line: string): boolean {
+  const trimmed = line.trim()
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    return false
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as {
+      type?: unknown
+      subtype?: unknown
+      session_id?: unknown
+      message?: unknown
+      result?: unknown
+    }
+
+    if (typeof parsed.type !== 'string') {
+      return false
+    }
+
+    // Filter out CCR/NPC event envelope lines that occasionally get pasted
+    // verbatim into the next prompt and trigger provider safety filters.
+    if (
+      parsed.type === 'system' &&
+      parsed.subtype === 'init' &&
+      parsed.session_id
+    ) {
+      return true
+    }
+
+    if (
+      (parsed.type === 'assistant' && parsed.message) ||
+      (parsed.type === 'result' && parsed.result !== undefined)
+    ) {
+      return true
+    }
+  } catch {
+    return false
+  }
+
+  return false
+}
+
+function sanitizePromptTransportNoise(input: string): string {
+  const lines = input.split('\n')
+  if (lines.length === 0) {
+    return input
+  }
+
+  const filtered = lines.filter(line => {
+    const trimmed = line.trim()
+    if (trimmed.length === 0) {
+      return true
+    }
+    if (trimmed.startsWith('[NPC]')) {
+      return false
+    }
+    return !isTransportJsonNoiseLine(trimmed)
+  })
+
+  const sanitized = filtered.join('\n').trim()
+  if (sanitized.length === 0) {
+    return input
+  }
+
+  if (sanitized !== input.trim()) {
+    logEvent('tengu_transport_noise_prompt_sanitized', {
+      removed_line_count: lines.length - filtered.length,
+      original_line_count: lines.length,
+    })
+  }
+
+  return sanitized
+}
+
 export type ProcessUserInputContext = ToolUseContext & LocalJSXCommandContext
 
 export type ProcessUserInputBaseResult = {
@@ -138,7 +213,12 @@ export async function processUserInput({
   isMeta?: boolean
   skipAttachments?: boolean
 }): Promise<ProcessUserInputBaseResult> {
-  const inputString = typeof input === 'string' ? input : null
+  const sanitizedInput =
+    typeof input === 'string' && mode === 'prompt'
+      ? sanitizePromptTransportNoise(input)
+      : input
+
+  const inputString = typeof sanitizedInput === 'string' ? sanitizedInput : null
   // Immediately show the user input prompt while we are still processing the input.
   // Skip for isMeta (system-generated prompts like scheduled tasks) — those
   // should run invisibly.
@@ -151,7 +231,7 @@ export async function processUserInput({
   const appState = context.getAppState()
 
   const result = await processUserInputBase(
-    input,
+    sanitizedInput,
     mode,
     setToolJSX,
     context,
@@ -177,7 +257,7 @@ export async function processUserInput({
 
   // Execute UserPromptSubmit hooks and handle blocking
   queryCheckpoint('query_hooks_start')
-  const inputMessage = getContentText(input) || ''
+  const inputMessage = getContentText(sanitizedInput) || ''
 
   for await (const hookResult of executeUserPromptSubmitHooks(
     inputMessage,

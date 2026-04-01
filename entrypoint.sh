@@ -58,6 +58,21 @@ if [ -n "$NPC_TRIGGER" ]; then
     echo "[NPC] 已启用 CNB AI 接口 (CNB_API_ENDPOINT=${CNB_API_ENDPOINT})"
   fi
 
+  # ---- 自定义系统提示词覆盖 ----
+  # 通过 CNB_CUSTOM_SYSTEM_PROMPT 环境变量可以覆盖 CLI 内置的系统提示词基础部分。
+  # 在混合模式下（默认），仅替换 CLI 自带的复杂 prompt，CLAUDE.md 中的 NPC 指引仍会保留。
+  # 设置 CNB_REPLACE_SYSTEM_PROMPT=1 则连 CLAUDE.md 也一并替换（不推荐）。
+  #
+  # 用法示例（在 .cnb.yml 的 env 中设置）：
+  #   CNB_CUSTOM_SYSTEM_PROMPT: "你是一个专业的代码审查助手，请用中文回复。"
+  #
+  # 如果未设置，使用内置默认值：
+  #   "You are a helpful coding assistant. Please respond in the same language as the user."
+  if [ -n "${CNB_CUSTOM_SYSTEM_PROMPT:-}" ]; then
+    export CNB_CUSTOM_SYSTEM_PROMPT
+    echo "[NPC] 已设置自定义系统提示词 (${#CNB_CUSTOM_SYSTEM_PROMPT} 字符)"
+  fi
+
   # AI 接口预检（输出接口地址、模型配置，测试连通性）
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   if [ -x "${SCRIPT_DIR}/scripts/precheck-ai.sh" ]; then

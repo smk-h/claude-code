@@ -13,7 +13,7 @@ echo "============================================"
 # ---- 1. 读取环境变量 ----
 CNB_API_ENDPOINT="${CNB_API_ENDPOINT:-https://api.cnb.cool}"
 CNB_REPO_SLUG="${CNB_REPO_SLUG:-}"
-AI_MODEL="${CNB_AI_MODEL:-${ai_model:-glm-5.0}}"
+AI_MODEL="${CNB_AI_MODEL:-${AI_MODEL:-glm-5.0}}"
 API_KEY="${CNB_TOKEN:-}"
 CNB_TOKEN_PREVIEW="${API_KEY:+${API_KEY:0:4}...}"
 
@@ -46,7 +46,7 @@ echo "  完整 API URL           : ${FULL_API_URL}"
 # ---- 3. 输出模型配置 ----
 echo ""
 echo "[预检] 模型配置:"
-echo "  ai_model               : ${AI_MODEL}"
+echo "  AI_MODEL               : ${AI_MODEL}"
 
 # ---- 4. 检查 API Key ----
 echo ""

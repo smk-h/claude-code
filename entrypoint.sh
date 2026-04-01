@@ -116,21 +116,27 @@ if [ -n "$NPC_TRIGGER" ]; then
     USER_MENTION="@${USER_NICK}"
   fi
 
-  # ---- NPC 自身的评论作者格式 ----
-  if [ -n "$NPC_SLUG" ] && [ -n "$NPC_NAME" ]; then
-    COMMENT_AUTHOR="@${NPC_SLUG}(${NPC_NAME})"
-  elif [ -n "$NPC_SLUG" ]; then
-    COMMENT_AUTHOR="@${NPC_SLUG}"
-  elif [ -n "$NPC_NAME" ]; then
-    COMMENT_AUTHOR="@${NPC_NAME}"
+  # ---- 触发者的 @ mention（用于评论开头称呼用户）----
+  # 优先使用触发者的 NPC 身份（如果触发者本身是 NPC）
+  if [ -n "$BUILD_USER_NPC_SLUG" ] && [ -n "$BUILD_USER_NPC_NAME" ]; then
+    TRIGGER_USER_MENTION="@${BUILD_USER_NPC_SLUG}(${BUILD_USER_NPC_NAME})"
+  elif [ -n "$BUILD_USER_NPC_SLUG" ]; then
+    TRIGGER_USER_MENTION="@${BUILD_USER_NPC_SLUG}"
+  # 否则使用普通用户身份
+  elif [ -n "$BUILD_USER" ] && [ -n "$BUILD_USER_NICKNAME" ]; then
+    TRIGGER_USER_MENTION="@${BUILD_USER}(${BUILD_USER_NICKNAME})"
+  elif [ -n "$BUILD_USER" ]; then
+    TRIGGER_USER_MENTION="@${BUILD_USER}"
+  elif [ -n "$BUILD_USER_NICKNAME" ]; then
+    TRIGGER_USER_MENTION="@${BUILD_USER_NICKNAME}"
   else
-    COMMENT_AUTHOR="@${BUILD_USER}(${BUILD_USER_NICKNAME})"
+    TRIGGER_USER_MENTION="@用户"
   fi
 
   echo "[NPC] 仓库: ${REPO_SLUG}"
   echo "[NPC] 资源: ${RESOURCE} #${RESOURCE_IID}"
   echo "[NPC] ${USER_TYPE}: ${USER_NICK:-${USER_NAME}}"
-  echo "[NPC] 评论身份: ${COMMENT_AUTHOR}"
+  echo "[NPC] 触发者 mention: ${TRIGGER_USER_MENTION}"
   echo "[NPC] 工作模式: ${WORKMODE}"
 
   # ---- 相对链接转换函数 ----
@@ -360,7 +366,7 @@ ${INSTRUCTIONS}
 </tips>
 
 <comment_format>
-${COMMENT_AUTHOR} {回答}
+${TRIGGER_USER_MENTION} {回答}
 </comment_format>
 
 <cnb_shortcuts>

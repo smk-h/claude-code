@@ -44,6 +44,14 @@ if [ -n "$NPC_TRIGGER" ]; then
     echo "[NPC] 已启用 CNB AI 接口 (CNB_API_ENDPOINT=${CNB_API_ENDPOINT})"
   fi
 
+  # AI 接口预检（输出接口地址、模型配置，测试连通性）
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [ -x "${SCRIPT_DIR}/scripts/precheck-ai.sh" ]; then
+    bash "${SCRIPT_DIR}/scripts/precheck-ai.sh" || echo "[NPC] ⚠️ AI 预检脚本执行异常（不影响后续启动）"
+  else
+    echo "[NPC] ⚠️ 未找到预检脚本 scripts/precheck-ai.sh，跳过预检"
+  fi
+
   # 判断资源类型
   if [ -n "$ISSUE_IID" ]; then
     RESOURCE="Issue"

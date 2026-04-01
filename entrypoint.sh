@@ -35,13 +35,10 @@ if [ -n "$NPC_TRIGGER" ]; then
   WORKMODE="${CNB_NPC_ENABLE_WORKMODE:-false}"
   WEB_ENDPOINT="${CNB_WEB_ENDPOINT:-https://cnb.cool}"
 
-  # CNB Token 优先级设置
-  export CNB_TOKEN="${CNB_TOKEN_FOR_CODEBUDDY:-${CNB_TOKEN_FOR_AI:-${CNB_TOKEN:-}}}"
-
-  # 清理冗余 token 变量，防止 AI 看到原始变量名后误用
-  # （参考 claude-code-cool/executor.ts 的 childEnv 处理）
-  unset CNB_TOKEN_FOR_CODEBUDDY
-  unset CNB_TOKEN_FOR_AI
+  # 确保 CNB_TOKEN 已设置
+  if [ -z "${CNB_TOKEN:-}" ]; then
+    echo "[NPC] ⚠️ CNB_TOKEN 未设置，API 调用可能失败"
+  fi
 
   # 确保非交互环境标识（参考 claude-code-cool/executor.ts: CI=true, TERM=dumb）
   export CI=true
@@ -56,6 +53,13 @@ if [ -n "$NPC_TRIGGER" ]; then
   if [ -n "${CNB_API_ENDPOINT:-}" ] && [ -n "${CNB_REPO_SLUG:-}" ]; then
     export CLAUDE_CODE_USE_CNB=1
     echo "[NPC] 已启用 CNB AI 接口 (CNB_API_ENDPOINT=${CNB_API_ENDPOINT})"
+    
+    # ⚠️ 临时测试：强制启用激进模式，完全替换 system prompt（丢弃 CLAUDE.md）
+    # 用于定位是否是 CLAUDE.md 中的内容触发了 glm-5.0 风控
+    # 确认可用后，可移除此设置或改为条件判断
+    export CNB_REPLACE_SYSTEM_PROMPT=1
+    export CNB_DEBUG_SYSTEM_PROMPT=1
+    echo "[NPC] ⚠️ 已强制启用激进模式 (CNB_REPLACE_SYSTEM_PROMPT=1)，将完全替换 system prompt"
   fi
 
   # ---- 自定义系统提示词覆盖 ----

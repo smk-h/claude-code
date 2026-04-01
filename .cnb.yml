@@ -3,13 +3,15 @@
       - docker
     stages:
       - name: run Claude Code
-        image: ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:latest
+        image: ${CNB_DOCKER_REGISTRY}/${CNB_NPC_SLUG_LOWERCASE}:latest
         timeout: 30m
         env:
           ai_model: glm-5.0-turbo
           base_url_path: /ai-ide/v2
           ACC_PRODUCT_CONFIG_V2: "true"
           CNB_REPLACE_SYSTEM_PROMPT: 1
+          CNB_DEBUG_SYSTEM_PROMPT: 1
+          CNB_CUSTOM_SYSTEM_PROMPT: "You are a helpful coding assistant."
 
 Claude:
   issue.comment@npc: *npc

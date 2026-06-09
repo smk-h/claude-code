@@ -21,7 +21,8 @@ Claude:
 $:
   vscode:
     - docker:
-        image: docker.cnb.cool/looc/default-dev-env:latest
+        #image: docker.cnb.cool/looc/default-dev-env:latest
+        image: docker.cnb.cool/sumu.k/docker-learning/node-24.x 
       services:
         - vscode
         - docker

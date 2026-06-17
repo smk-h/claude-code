@@ -60,8 +60,8 @@ export function parseFrontmatter(markdown: string, sourcePath?: string): ParsedM
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `name` | `string` | 显示名称，覆盖目录名 |
-| `description` | `string` | 技能描述，用于 skill 列表 |
-| `when_to_use` | `string` | 使用时机提示，附加在描述后 |
+| `description` | `string` | 技能描述，用于 skill 列表（**发现阶段 LLM 调度的核心依据**） |
+| `when_to_use` | `string` | 使用时机提示，附加在 description 后（**发现阶段 LLM 调度的补充依据**） |
 | `allowed-tools` | `string/string[]` | 允许的工具列表 |
 | `arguments` | `string/string[]` | 参数名列表 |
 | `argument-hint` | `string` | 参数提示文本 |
@@ -75,6 +75,8 @@ export function parseFrontmatter(markdown: string, sourcePath?: string): ParsedM
 | `paths` | `string/string[]` | 条件激活的文件路径模式 |
 | `shell` | `FrontmatterShell` | Shell 执行配置 |
 | `version` | `string` | 版本号 |
+
+> **`description` vs `when_to_use` vs 正文的"触发时机"章节**：这三个位置写的触发/使用时机，对 LLM 的可见性不同。详见 [LV042 第二节的两阶段可见性分析](LV042-Skills加载策略与上下文注入.md)。
 
 ### 1. description 的降级策略
 

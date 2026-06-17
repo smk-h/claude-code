@@ -31,6 +31,49 @@ export function estimateSkillFrontmatterTokens(skill: Command): number {
 
 可见仅计算 `name` + `description` + `whenToUse` 的 token 数，不涉及正文内容。
 
+#### 1.1 `whenToUse` 的来源：frontmatter 的 `when_to_use` 字段
+
+Skill 的 `whenToUse` 来自 [`parseSkillFrontmatter()`](../../claude-code-source/src/skills/loadSkillsDir.ts#L252) 解析 SKILL.md frontmatter 中的 `when_to_use` 字段，与 `description` 是**独立的两个字段**：
+
+```typescript
+// src/skills/loadSkillsDir.ts#L252
+whenToUse: frontmatter.when_to_use as string | undefined,
+```
+
+- `description`：技能的简短描述（**必须字段**，有降级策略——缺省时自动生成通用描述）
+- `when_to_use`：详细的使用时机提示（**可选字段**，默认 `undefined`）
+
+**与子 Agent 的关键区别**：子 Agent 的 `whenToUse` 映射自 `description` 字段（`whenToUse = frontmatter['description']`），而 Skill 的 `whenToUse` 是独立的 `when_to_use` 字段。
+
+> **实际现状**：大多数内置 Skill（bundled skill）通过代码注册（`registerBundledSkill()`），没有设置 `whenToUse`；用户自建的 SKILL.md 也常省略 `when_to_use`。因此**大多数 Skill 的发现阶段只展示 `description`**，LLM 的调度决策仅凭这一句话。
+
+#### 1.2 发现阶段 LLM 看到的内容
+
+[`getCommandDescription()`](../../claude-code-source/src/tools/SkillTool/prompt.ts#L43-L50) 根据 `whenToUse` 是否存在拼接列表项：
+
+```typescript
+// src/tools/SkillTool/prompt.ts#L43-L50
+function getCommandDescription(cmd: Command): string {
+  const desc = cmd.whenToUse
+    ? `${cmd.description} - ${cmd.whenToUse}`  // ← 两个字段都展示
+    : cmd.description                            // ← 无 whenToUse 时仅展示 description
+  return desc.length > MAX_LISTING_DESC_CHARS
+    ? desc.slice(0, MAX_LISTING_DESC_CHARS - 1) + '\u2026'
+    : desc
+}
+```
+
+**两种情况**：
+
+| `when_to_use` 状态 | 列表格式 | 示例 |
+|:---:|:---:|:---|
+| **未定义**（大多数 Skill） | `- name: description` | `- markdowncli: 按照指定的格式规范创建和修改Markdown文档` |
+| **已定义** | `- name: description - whenToUse` | `- markdowncli: 按照指定的格式规范创建和修改Markdown文档 - 当用户需要创建或修改Markdown文档时自动激活` |
+
+受 `MAX_LISTING_DESC_CHARS = 250` 字符/条限制。
+
+**重要**：正文中写的"何时触发"、"触发时机"等章节，在发现阶段**不可见**。LLM 的调度决策仅基于 frontmatter 中实际存在的字段——大多数情况下**只有 `description`**。
+
 ### 2. 调用阶段：按需加载完整内容
 
 当模型通过 SkillTool 调用某个 skill 时，才会执行 [`getPromptForCommand()`](../../claude-code-source/src/skills/loadSkillsDir.ts#L344-L398) 获取完整的 Markdown 正文：
@@ -45,6 +88,24 @@ async getPromptForCommand(args, toolUseContext) {
   return [{ type: 'text', text: finalContent }]
 }
 ```
+
+#### 2.1 正文中"触发时机"的可见性
+
+**调用后，正文中写的"何时触发"、"触发时机"等章节对主会话 LLM 完全可见**——完整正文作为 `isMeta: true` 的用户消息注入主会话的 `messages` 数组。
+
+但这有一个关键前提：**LLM 必须先在发现阶段决定调用该 Skill**，才能看到正文。如果 `description` 和 `when_to_use` 写得不够精准，LLM 根本不会调用该 Skill，正文中再详细的触发时机也无济于事。
+
+> **核心结论**：对于"LLM 是否选择调用该 Skill"这个决策来说，正文中的"何时触发"没有意义。调度依据**只有 frontmatter 的两个字段**——`description`（必须）和 `when_to_use`（可选）。正文中写触发时机的唯一潜在作用是：Skill 被调用过一次后，完整正文注入主会话，LLM 在**同一对话的后续轮次**中可能据此判断是否再次调用——但这属于副作用，不可靠，且前提是 LLM 已经选过一次。**如果想让 LLM 在发现阶段准确选中你的 Skill，触发信息必须写在 `description` 或 `when_to_use` 里。**
+
+两阶段可见性总结：
+
+| 内容 | 发现阶段可见 | 调用后可见 | 对调度决策的影响 |
+|------|:----------:|:--------:|:-------------:|
+| `name`（frontmatter） | ✅ | ✅ | 间接（匹配调用名称） |
+| `description`（frontmatter，必须） | ✅ | ✅ | **直接**（核心决策依据） |
+| `when_to_use`（frontmatter，可选） | ✅（定义时） | ✅ | 直接（补充决策依据，但大多数 Skill 未定义） |
+| 正文中的"何时触发"章节 | ❌ | ✅ | 间接（仅影响后续调用意愿） |
+| 正文中的行为指令 | ❌ | ✅ | 无（影响执行质量，不影响调度） |
 
 ## 三、 Skill 列表的注入方式
 

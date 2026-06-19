@@ -60,6 +60,15 @@ main:
             rootlessBuildkitd:
               enabled: true
       stages:
+        - name: sync to sumumm'github
+          image: tencentcom/git-sync
+          imports: https://cnb.cool/sumu.k/secret-key/-/blob/main/access-token.yml
+          settings:
+            target_url: https://github.com/smk-h/claude-code.git
+            auth_type: https
+            username: sumumm
+            password: ${GITHUB_CNB_SYNC}
+            force: true
         - name: docker build & push
           script: |
             docker buildx build --platform linux/amd64,linux/arm64 -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:latest --push .

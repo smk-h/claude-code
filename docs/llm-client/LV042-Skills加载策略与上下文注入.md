@@ -107,6 +107,49 @@ async getPromptForCommand(args, toolUseContext) {
 | 正文中的"何时触发"章节 | ❌ | ✅ | 间接（仅影响后续调用意愿） |
 | 正文中的行为指令 | ❌ | ✅ | 无（影响执行质量，不影响调度） |
 
+### 3. 第三层：Skill 目录内参考文件的按需探索
+
+前两个阶段（发现、调用）由系统驱动：系统在特定时机自动注入元数据或完整正文。除此之外还存在**第三层、由模型驱动**的加载——Claude 在拿到完整正文后，可自主读取 Skill 目录内的参考文件、脚本、模板等资源。
+
+#### 3.1 启用机制：Base Directory 前缀
+
+调用阶段注入正文时，系统在正文前拼接 `Base directory for this skill: ${baseDir}`（见[第二节 2. 调用阶段](#2-调用阶段按需加载完整内容)）。这并非装饰性信息，而是为了让模型能将正文中出现的相对路径（如 `./references/api.md`、`./scripts/rollback.sh`、`./schemas/config.json`）解析到 Skill 的实际目录。
+
+源码注释明确说明了这一设计意图：
+
+```typescript
+// src/tools/SkillTool/SkillTool.ts#L1070-L1072
+// Inject base directory header + ${CLAUDE_SKILL_DIR}/${CLAUDE_SESSION_ID}
+// substitution (matches loadSkillsDir.ts) so the model can resolve relative
+// refs like ./schemas/foo.json against the cache dir.
+```
+
+同时，正文中的 `${CLAUDE_SKILL_DIR}` 变量会被替换为 Skill 目录的绝对路径（见 [LV041 第五节](LV041-Skills-MD文件解析与内容注入.md)），使模型在生成文件操作时能直接定位到 Skill 目录。
+
+#### 3.2 Skill 是文件夹而非单文件
+
+第三层的存在意味着 **Skill 本质上是一个文件夹系统**，而非单个 markdown 文件。一个完整的 Skill 目录可包含：
+
+```
+deploy-service/
+├── SKILL.md               # 必需：何时用 + 操作指引 + 坑点清单
+├── references/            # 参考资料：正文放不下的细节
+├── scripts/               # 可执行脚本
+└── assets/                # 输出模板
+```
+
+子目录中的文件**不会一股脑塞给模型**，而是在模型判断需要时（如正文提到"详见 `references/troubleshooting.md`"）才通过 Read/Glob 等工具自行读取。这与前两层的"系统自动注入"形成对比——第三层是**模型按需自取**。
+
+#### 3.3 三层加载对比
+
+| 层次 | 驱动方 | 时机 | 加载内容 | 触发条件 |
+|------|--------|------|----------|----------|
+| 第一层 | 系统 | 会话启动 | name + description（元数据） | 自动 |
+| 第二层 | 系统 | 模型调用 SkillTool | SKILL.md 完整正文 | 模型决策调用 |
+| 第三层 | 模型 | 正文注入后任意时刻 | 目录内参考文件/脚本/模板 | 模型自主读取 |
+
+三层共同构成 **渐进式披露（Progressive Disclosure）**：从极低成本的元数据摘要，到按需加载的完整正文，再到模型主动探索的目录资源——每个 Skill 的实际上下文开销随使用深度递增，未使用的资源不产生任何成本。
+
 ## 三、 Skill 列表的注入方式
 
 Skill 列表通过 **attachment** 机制注入，而非系统提示词。具体流程：
@@ -402,6 +445,15 @@ function truncateToTokens(content: string, maxTokens: number): string {
 #### 5.1 发现阶段：frontmatter 精准即可
 
 发现阶段注入的是 `name + description + whenToUse`，受 1% 上下文预算和 `MAX_LISTING_DESC_CHARS = 250` 字符/条上限控制。每个 skill 的开销极小（如 `markdowncli` 仅 ~10 token），所以只要控制在预算内，frontmatter 的精简程度影响不大。更重要的是**精准**——让模型准确判断是否该调用这个 skill。
+
+> **description 写法：触发条件而非摘要**。description 不是写给人看的概述，而是写给模型看的**触发条件**。前 250 个字符决定 skill 是工具还是摆设。
+>
+> | 写法 | 示例 | 问题 |
+> |------|------|------|
+> | ❌ 人类视角摘要 | "帮助处理数据库相关工作" | 模型无法判断何时该用 |
+> | ✅ 模型视角触发条件 | "当用户要写数据库迁移、修改表结构、或遇到 migration 报错时使用" | 明确命中场景 |
+>
+> 同时需注意 **贵精不贵多**：每多一个 skill，所有人在每次会话都多承担一行清单的 context 开销（见[第四节预算控制](#四-skill-列表的预算控制)），互相挤占 1% 的清单预算。
 
 #### 5.2 调用阶段：精简 ≠ 越短越好
 

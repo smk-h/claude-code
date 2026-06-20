@@ -109,6 +109,34 @@ function parseSkillPaths(frontmatter: FrontmatterData): string[] | undefined {
 - 移除 `/**` 后缀（`ignore` 库会自动匹配目录内所有内容）
 - 全匹配模式 `**` 等同于无条件
 
+### 3. hooks 字段的会话级注册
+
+frontmatter 中的 `hooks` 字段定义的生命周期钩子，并非像配置文件钩子那样在启动时全局注册，而是在 **Skill 被调用时才注册为会话级（session-scoped）钩子**。
+
+注册发生在 [`processPromptSlashCommand()`](../../claude-code-source/src/utils/processUserInput/processSlashCommand.tsx#L872-L878)，即 Skill 正文注入流程中：
+
+```typescript
+// src/utils/processUserInput/processSlashCommand.tsx#L872-L878
+const hooksAllowedForThisSkill =
+  !isRestrictedToPluginOnly('hooks') || isSourceAdminTrusted(command.source);
+if (command.hooks && hooksAllowedForThisSkill) {
+  const sessionId = getSessionId();
+  registerSkillHooks(
+    context.setAppState, sessionId, command.hooks, command.name,
+    command.type === 'prompt' ? command.skillRoot : undefined,
+  );
+}
+```
+
+[`registerSkillHooks()`](../../claude-code-source/src/utils/hooks/registerSkillHooks.ts#L20-L64) 将钩子逐个注册为会话级钩子，关键行为：
+
+- **按需注册**：只有 Skill 被实际调用时，其 hooks 才生效——未调用的 Skill 的 hooks 不产生任何开销
+- **会话级生命周期**：注册的钩子在整个会话期间持续有效（而非仅在该 Skill 的单次执行期间）
+- **`once: true` 自动注销**：标记为一次性的钩子在首次成功执行后通过 [`removeSessionHook()`](../../claude-code-source/src/utils/hooks/sessionHooks.ts) 自动移除
+- **`skillRoot` 传递**：Skill 的 `skillRoot`（即 `baseDir`）作为 `CLAUDE_PLUGIN_ROOT` 环境变量注入钩子进程，使钩子脚本能定位到 Skill 目录
+
+> **与 Agent hooks 的区别**：Agent 的 frontmatter hooks 在子 Agent 退出时通过 `clearSessionHooks()` 清理（见 [LV060](LV060-子Agent框架总览.md)）；Skill 的 hooks 则注册到主会话，持续到会话结束。这意味着 Skill 可以用 hooks 实现"激活后常驻"的行为护栏（如阻断危险命令、锁定文件修改范围），而无需用户手动配置全局钩子。
+
 ## 五、 Skill Command 对象构建
 
 [`createSkillCommand()`](../../claude-code-source/src/skills/loadSkillsDir.ts#L270-L401) 将解析后的数据构建为 `Command` 对象，其中最核心的方法是 [`getPromptForCommand()`](../../claude-code-source/src/skills/loadSkillsDir.ts#L344-L398)：
@@ -143,9 +171,9 @@ async getPromptForCommand(args, toolUseContext) {
 
 ### 1. 内容变换步骤
 
-1. **添加 Base Directory 前缀**：如果 skill 有 `baseDir`，在正文前添加 `Base directory for this skill: <dir>`
+1. **添加 Base Directory 前缀**：如果 skill 有 `baseDir`，在正文前添加 `Base directory for this skill: <dir>`。该前缀不仅是路径提示，更使模型能将正文中的相对路径（如 `./references/api.md`）解析到 Skill 实际目录，从而自主读取参考文件——这是渐进式披露第三层的启用机制（详见 [LV042 第二节 3. 第三层](LV042-Skills加载策略与上下文注入.md)）
 2. **参数替换**：将 `$ARGUMENTS` 或命名参数替换为实际值
-3. **变量替换**：`${CLAUDE_SKILL_DIR}` 和 `${CLAUDE_SESSION_ID}`
+3. **变量替换**：`${CLAUDE_SKILL_DIR}`（替换为 Skill 目录绝对路径）和 `${CLAUDE_SESSION_ID}`。`${CLAUDE_SKILL_DIR}` 有双重用途：(a) 让模型在正文引用相对路径时能定位到 Skill 目录；(b) 作为 Skill 的**持久化记忆机制**——Skill 可将执行结果、配置等数据写入自身目录（如 `${CLAUDE_SKILL_DIR}/state.json`），在后续调用中读取，实现跨轮次的记忆与配置持久化。对于通过插件分发的 Skill，还可使用 `${CLAUDE_PLUGIN_DATA}` 获取独立于版本升级的持久数据目录（见 [`getPluginDataDir()`](../../claude-code-source/src/utils/plugins/pluginDirectories.ts#L102-L123)）
 4. **Shell 命令执行**：处理 `!`command`` 格式的内联 shell 命令（MCP skills 除外）
 
 ## 六、 Legacy Commands 格式差异

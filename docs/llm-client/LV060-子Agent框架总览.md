@@ -423,14 +423,14 @@ if (feature('VERIFICATION_AGENT') && ...) {
 
 ### 2. 内置 Agent 一览
 
-| Agent | agentType | 用途 | 工具 | 模型 | 定义文件 |
-|-------|-----------|------|------|------|----------|
-| General Purpose | `general-purpose` | 通用多步任务 | `*`（所有） | 默认 | [`generalPurposeAgent.ts`](../../claude-code-source/src/tools/AgentTool/built-in/generalPurposeAgent.ts#L25-L34) |
-| Explore | `Explore` | 代码库搜索/探索（只读） | 禁用写入工具 | `haiku`/`inherit` | [`exploreAgent.ts`](../../claude-code-source/src/tools/AgentTool/built-in/exploreAgent.ts#L64-L83) |
-| Plan | `Plan` | 架构设计/规划（只读） | 同 Explore | `inherit` | [`planAgent.ts`](../../claude-code-source/src/tools/AgentTool/built-in/planAgent.ts#L73-L92) |
-| Statusline Setup | （statusline） | 状态栏设置 | 有限 | - | [`statuslineSetup.ts`](../../claude-code-source/src/tools/AgentTool/built-in/statuslineSetup.ts) |
-| Claude Code Guide | `claude-code-guide` | 帮助用户使用 Claude Code | 搜索 + Web | - | [`claudeCodeGuideAgent.ts`](../../claude-code-source/src/tools/AgentTool/built-in/claudeCodeGuideAgent.ts) |
-| Verification | `verification` | 验证实现正确性 | 有限工具 | - | [`verificationAgent.ts`](../../claude-code-source/src/tools/AgentTool/built-in/verificationAgent.ts) |
+| Agent | agentType | 用途 | 模型 | 只读 | 后台 | 加载条件 | 定义文件 |
+|-------|-----------|------|------|------|------|----------|----------|
+| General Purpose | `general-purpose` | 通用多步任务 | 默认 | 否 | 否 | 始终 | [`generalPurposeAgent.ts`](../../claude-code-source/src/tools/AgentTool/built-in/generalPurposeAgent.ts#L25-L34) |
+| Explore | `Explore` | 代码库搜索/探索 | `haiku`/`inherit` | 是 | 否 | `areExplorePlanAgentsEnabled()` | [`exploreAgent.ts`](../../claude-code-source/src/tools/AgentTool/built-in/exploreAgent.ts#L64-L83) |
+| Plan | `Plan` | 架构设计/规划 | `inherit` | 是 | 否 | 同 Explore | [`planAgent.ts`](../../claude-code-source/src/tools/AgentTool/built-in/planAgent.ts#L73-L92) |
+| Statusline Setup | （statusline） | 状态栏设置 | - | 否 | 否 | 始终 | [`statuslineSetup.ts`](../../claude-code-source/src/tools/AgentTool/built-in/statuslineSetup.ts) |
+| Claude Code Guide | `claude-code-guide` | 帮助用户使用 Claude Code | - | 否 | 否 | 非 SDK 入口 | [`claudeCodeGuideAgent.ts`](../../claude-code-source/src/tools/AgentTool/built-in/claudeCodeGuideAgent.ts) |
+| Verification | `verification` | 对抗性验证 | `inherit` | 项目只读 | 是 | `VERIFICATION_AGENT` flag + `tengu_hive_evidence` | [`verificationAgent.ts`](../../claude-code-source/src/tools/AgentTool/built-in/verificationAgent.ts#L134-L152) |
 
 ### 3. General Purpose Agent 详解
 
@@ -492,7 +492,62 @@ export const EXPLORE_AGENT: BuiltInAgentDefinition = {
 - 使用 `haiku` 模型（外部用户）提升速度，Ant 内部用户继承主模型
 - `omitClaudeMd: true` — 不加载 CLAUDE.md，节省约 5-15 Gtok/week
 
-### 5. 一次性 Agent
+### 5. Verification Agent 详解
+
+Verification Agent 是对抗性验证专家，始终后台运行，定义在 [`verificationAgent.ts`](../../claude-code-source/src/tools/AgentTool/built-in/verificationAgent.ts#L134-L152)：
+
+```typescript
+// src/tools/AgentTool/built-in/verificationAgent.ts#L134-L152
+export const VERIFICATION_AGENT: BuiltInAgentDefinition = {
+  agentType: 'verification',
+  whenToUse: VERIFICATION_WHEN_TO_USE,
+  color: 'red',                          // UI 中红色标识
+  background: true,                      // 始终后台运行
+  disallowedTools: [
+    AGENT_TOOL_NAME,                     // 禁止嵌套 Agent
+    EXIT_PLAN_MODE_TOOL_NAME,
+    FILE_EDIT_TOOL_NAME,                 // 禁止编辑项目文件
+    FILE_WRITE_TOOL_NAME,                // 禁止写入项目文件
+    NOTEBOOK_EDIT_TOOL_NAME,
+  ],
+  source: 'built-in',
+  baseDir: 'built-in',
+  model: 'inherit',                      // 继承父进程模型
+  getSystemPrompt: () => VERIFICATION_SYSTEM_PROMPT,
+  criticalSystemReminder_EXPERIMENTAL:
+    'CRITICAL: This is a VERIFICATION-ONLY task. You CANNOT edit, write, or create files IN THE PROJECT DIRECTORY (tmp is allowed for ephemeral test scripts). You MUST end with VERDICT: PASS, VERDICT: FAIL, or VERDICT: PARTIAL.',
+}
+```
+
+关键特性：
+
+- **对抗性验证**：系统提示词要求主动尝试破坏实现，而非确认其工作。识别两种失败模式：验证回避（找理由不运行检查）和被前 80% 诱惑（看到 polished UI 就倾向 PASS）
+- **项目只读**：禁止修改项目目录中的文件，但允许在 `/tmp` 或 `$TMPDIR` 中编写临时测试脚本
+- **始终后台**：`background: true`，spawn 时始终异步运行
+- **强制判定**：`criticalSystemReminder_EXPERIMENTAL` 在每轮重注入，提醒必须以 `VERDICT: PASS`/`FAIL`/`PARTIAL` 结束
+- **加载条件**：受 `VERIFICATION_AGENT` feature flag 和 `tengu_hive_evidence` GrowthBook 双重控制
+
+完整的 system prompt 文本见 [LV023 第四节](LV023-Agent提示词.md)。
+
+### 6. 加载条件汇总
+
+内置 Agent 的加载受多个条件控制，汇总如下：
+
+| Agent | 加载条件 |
+|-------|----------|
+| General Purpose | 始终加载 |
+| Statusline Setup | 始终加载 |
+| Explore | `areExplorePlanAgentsEnabled()` 为 true（受 `tengu_amber_stoat` flag 控制，默认 true） |
+| Plan | 同 Explore |
+| Claude Code Guide | 非 SDK 入口（`CLAUDE_CODE_ENTRYPOINT` 不为 `sdk-ts`/`sdk-py`/`sdk-cli`） |
+| Verification | `VERIFICATION_AGENT` feature 开启 且 `tengu_hive_evidence` GrowthBook 为 true |
+
+特殊控制：
+
+- **SDK 禁用**：环境变量 `CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS` 在非交互模式下可禁用所有内置 Agent，见 [`builtInAgents.ts`](../../claude-code-source/src/tools/AgentTool/builtInAgents.ts#L25-L30)
+- **Coordinator 模式**：`CLAUDE_CODE_COORDINATOR_MODE` 启用时返回专用的 coordinator agents，替代常规内置 Agent，见 [`builtInAgents.ts`](../../claude-code-source/src/tools/AgentTool/builtInAgents.ts#L35-L43)
+
+### 7. 一次性 Agent
 
 定义在 [`src/tools/AgentTool/constants.ts`](../../claude-code-source/src/tools/AgentTool/constants.ts#L9-L12)：
 
